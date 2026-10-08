@@ -5,13 +5,15 @@
 last week your model got a sense of time; tonight it gets a record that
 survives the end of the conversation.
 
-One table. Two tools (`record_quote`, `list_quotes`). A database that
-outlives the server, the deploy, and the chat window.
+Made mine: a **habit tracker and mood log** (ADR-0005). Two tables. Five
+tools (`log_habit`, `log_mood`, `show_history`, `delete_entry`,
+`restore_entry`), with soft delete so a mistake can be hidden but never
+truly lost. A database that outlives the server, the deploy, and the chat
+window.
 
 - **In class**: follow [COURSE-STEPS.md](COURSE-STEPS.md).
 - **Every design choice, with the road not taken**: [docs/adr/](docs/adr/) —
-  four real decisions, none decorative. When you change the code and face
-  a choice of your own, add ADR-0005.
+  four real decisions from the template, plus ADR-0005, my own.
 - **Stack**: FastMCP (`mcp[cli] >=1.2,<2` — pinned, see render.yaml) +
   `psycopg` + [Neon](https://neon.tech) free-tier Postgres + Render
   free-tier compute. The secret (`DATABASE_URL`) lives only in the
