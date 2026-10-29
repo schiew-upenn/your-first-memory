@@ -1,7 +1,7 @@
 [project]
 name = "your-first-memory"
 version = "0.1.0"
-description = "A memory for a model that has none — CAM session-5 starter (record quotes, list quotes, Neon Postgres)"
+description = "A Philly + NYC food recommender that remembers how you feel — CAM session-5 memory server (moods, places, meals, restaurant news; Neon Postgres)"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.2,<2",       # pinned: mcp 2.x renamed FastMCP (also pinned in render.yaml — buildCommand bypasses this file)
