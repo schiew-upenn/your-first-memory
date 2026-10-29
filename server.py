@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS recommendations (
 ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS batch INTEGER;
 ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS rank  INTEGER;
 ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS fit   INTEGER;
+-- "rejected" was ADR-0007's first name for a miss.
+UPDATE recommendations SET status = 'missed' WHERE status = 'rejected';
 """
 
 # The mood -> vibe mapping is the whole recommender (ADR-0006). Change it
