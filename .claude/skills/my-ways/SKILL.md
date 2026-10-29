@@ -42,28 +42,37 @@ rating, "not_yet", or "not_going".
 8. Where and when? (neighborhood or how far you'll go; tonight or later;
    dine in or takeout)
 
-## 5. One recommendation
+## 5. Three recommendations, with a chart
 
-Call recommend_for_mood with the city and every answer. Pick ONE place
-that fits every answer — not one that missed earlier in this request. A
-place that missed on an earlier day is fine again if today's answers
-avoid what was wrong with it. If nothing there fits,
-search the web for a current place you can link — never recommend from
-your own memory. Call record_recommendation, then tell me the place, why
-it fits my answers, and the link, and ask: "How good is this
-recommendation, 1–5?"
+Call recommend_for_mood with the city and every answer. Pick at least
+THREE places that fit — none that missed earlier in this request. A place
+that missed on an earlier day is fine again if today's answers avoid what
+was wrong with it. If there aren't three good candidates, search the web
+for current places you can link — never recommend from your own memory.
+
+Score each place 0–5 against each of my answers, honestly, and call
+present_recommendations with a one-line reading of what I really want.
+Then reply in this order:
+
+1. **The reading** — one italic line, before anything else.
+2. **The fit chart** the tool returns, unchanged, in a code block.
+3. **#1** — why it's the top pick, pointing at the rows where it wins.
+4. **#2 and #3** — why each is a good relative match, and where it falls
+   short of #1.
+5. Links for all three, then: "How good are these recommendations, 1–5?"
 
 ## 6. My rating
 
-Call rate_recommendation.
+Call rate_recommendations with the set number.
 
-- **1–3:** ask what was wrong with it (if I didn't say) — too loud, too
-  pricey, wrong food, too far? Don't re-ask the questions. Keep all my
-  answers, change only what my feedback points to, tell me in one line
-  how you're adjusting ("going quieter and cheaper"), and recommend a
-  different place. Rate that one the same way.
-- **4–5:** ask "Want me to add it to your try list?" If yes, save_place
-  with the recommendation_id, so you'll ask me how it went next time.
+- **1–3:** ask what was wrong (if I didn't say) — too loud, too pricey,
+  wrong food, too far? Don't re-ask the questions. Keep all my answers,
+  change only what my feedback points to, tell me in one line how you're
+  adjusting ("going quieter and cheaper"), and present three different
+  places. Rate that set the same way.
+- **4–5:** ask "Which one should I add to your try list?" with the three
+  places as choices. save_place with that place's recommendation_id, so
+  you'll ask me how it went next time.
 
 ## Always
 

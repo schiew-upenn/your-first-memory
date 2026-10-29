@@ -45,13 +45,16 @@ mcp = FastMCP(
         "skipping anything already answered. Log the mood (one of crying, "
         "sad, neutral, happy, ecstatic) with log_mood, then call "
         "recommend_for_mood. "
-        "5) Give ONE recommendation that fits every answer, record it with "
-        "record_recommendation, and ask the user to rate it 1-5. "
-        "6) rate_recommendation: 1-3 means ask what was wrong with it, keep "
-        "all their answers, adjust only in the direction the feedback points "
-        "(quieter, cheaper, closer…), and recommend a different place — don't "
-        "re-ask the questions; 4-5 means ask whether to add it to their try "
-        "list (save_place with recommendation_id). "
+        "5) Pick at least THREE places, score each 0-5 against every answer, "
+        "and call present_recommendations with a one-line reading of what "
+        "the user wants. Reply exactly as it says: the reading, the fit chart, "
+        "why #1 is the top pick, and why #2 and #3 are good relative matches. "
+        "Then ask them to rate the set 1-5. "
+        "6) rate_recommendations: 1-3 means ask what was wrong, keep all "
+        "their answers, adjust only in the direction the feedback points "
+        "(quieter, cheaper, closer…), and present three different places — "
+        "don't re-ask the questions; 4-5 means ask which one to add to their "
+        "try list (save_place with that place's recommendation_id). "
         "Only recommend places from the tools or from a web search you can "
         "link — never from memory. Only call log_meal for a meal the user "
         "actually ate. Tell them what you saved, with its entry id, so a "
@@ -113,6 +116,11 @@ CREATE TABLE IF NOT EXISTS recommendations (
     last_asked_at TIMESTAMPTZ,                 -- last follow-up the user answered "not yet"
     deleted_at    TIMESTAMPTZ
 );
+-- Recommendations come in sets of 3+ (ADR-0008): batch = the top pick's
+-- id, rank 1..n, fit = % match to the user's answers.
+ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS batch INTEGER;
+ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS rank  INTEGER;
+ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS fit   INTEGER;
 """
 
 # The mood -> vibe mapping is the whole recommender (ADR-0006). Change it
@@ -437,7 +445,7 @@ def recommend_for_mood(
     budget: str = "",
     where_when: str = "",
 ) -> str:
-    """Candidates for ONE recommendation in a city ("philly" or "nyc").
+    """Candidates for a set of recommendations in a city ("philly" or "nyc").
     Needs the user's answer to every question — mood (crying, sad, neutral,
     happy, ecstatic), occasion, company, craving, avoid, atmosphere, budget,
     where_when — each asked ONE per message; pass "skip" if they skipped
@@ -445,10 +453,11 @@ def recommend_for_mood(
     the next question to ask, and nothing else. Once complete, it returns
     what the mood calls for, past meals that went well in this mood, saved
     places, recent misses with what was wrong, news matching the craving,
-    and — for happy or ecstatic — recent openings. Choose ONE place that
-    fits every answer. After a miss, call again with the answers adjusted
-    by the user's feedback. If nothing here fits, search the web for a
-    current place you can link; never recommend from memory."""
+    and — for happy or ecstatic — recent openings. Choose at least THREE
+    places and pass them, scored, to present_recommendations. After a
+    miss, call again with the answers adjusted by the user's feedback. If
+    there aren't three good candidates here, search the web for current
+    places you can link; never recommend from memory."""
     key = city_key(city)
     if not key:
         return CITY_ERROR
@@ -527,37 +536,95 @@ def recommend_for_mood(
     return "\n".join(out)
 
 
+LABELS = {
+    "mood": "Mood", "occasion": "Occasion", "company": "With", "craving": "Craving",
+    "avoid": "Avoids", "atmosphere": "Vibe", "budget": "Budget", "where_when": "Where/when",
+}
+
+
+def fit_chart(answers: dict[str, str], ranked: list[dict]) -> str:
+    """Rows = the user's answers, columns = the places, █ per point (0-5)."""
+    label_w, col_w = 32, 16
+    head = " " * label_w + "".join(f"{i}. {o['place']}"[: col_w - 1].ljust(col_w) for i, o in enumerate(ranked, 1))
+    lines = [head]
+    for param, answer in answers.items():
+        label = f"{LABELS[param]} · {answer}"[: label_w - 2].ljust(label_w)
+        lines.append(label + "".join(("█" * o["scores"][param] + "░" * (5 - o["scores"][param])).ljust(col_w) for o in ranked))
+    lines.append("─" * (label_w + col_w * len(ranked) - 3))
+    lines.append("Overall fit".ljust(label_w) + "".join(f"{o['fit']}%".ljust(col_w) for o in ranked))
+    return "\n".join(line.rstrip() for line in lines)
+
+
 @mcp.tool()
-def record_recommendation(
-    city: str, place: str, mood: str, answers: str, reason: str, link: str = ""
+def present_recommendations(
+    city: str, mood: str, reading: str, answers: dict[str, str], options: list[dict]
 ) -> str:
-    """Record the ONE recommendation you're about to give, before asking
-    the user to rate it. `answers` summarizes what they told you (occasion,
-    company, cravings, dislikes, atmosphere, budget, where/when); `reason`
-    is why this place fits; `link` is the article or page it came from."""
+    """Record and chart a set of at least THREE recommendations, before
+    showing them. `reading` is ONE line, in your own words, on what the
+    user really wants tonight ("Something warm and low-key with a friend —
+    noodles over fuss, close by, under $$"). `answers` maps each question
+    the user answered (mood, occasion, company, craving, avoid, atmosphere,
+    budget, where_when — leave out skipped ones) to their answer. `options`
+    is a list of {"place", "why", "link", "scores"}: `scores` gives 0-5 for
+    every key in `answers` — how well the place fits that answer (for
+    avoid: how well it avoids it). Returns the fit chart and how to reply."""
     key = city_key(city)
     if not key:
         return CITY_ERROR
     mood = mood.strip().lower()
     if mood and mood not in MOODS:
         return f"mood must be one of {', '.join(MOODS)}."
+    if not reading.strip():
+        return "reading is required: one line on what the user really wants."
+    answers = {p: a.strip() for p, a in answers.items() if p in LABELS and a.strip() and a.strip().lower() != "skip"}
+    if not answers:
+        return f"answers must map the user's answered questions ({', '.join(LABELS)}) to what they said."
+    if len(options) < 3:
+        return f"Give at least 3 options (got {len(options)}): a top pick and two relative matches."
+    for o in options:
+        missing = [p for p in answers if not isinstance((o.get("scores") or {}).get(p), int)
+                   or not 0 <= o["scores"][p] <= 5]
+        if not o.get("place") or missing:
+            return f"Each option needs a place and a 0-5 score for: {', '.join(answers)}. Check {o.get('place') or 'an option'} ({', '.join(missing)})."
+        o["fit"] = round(100 * sum(o["scores"][p] for p in answers) / (5 * len(answers)))
+    ranked = sorted(options, key=lambda o: o["fit"], reverse=True)
+    summary = f"{reading.strip()} | " + "; ".join(f"{LABELS[p]}: {a}" for p, a in answers.items())
     with db() as conn, conn.cursor() as cur:
-        cur.execute(
-            """INSERT INTO recommendations (city, place, mood, answers, reason, link)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (key, place.strip(), mood or None, answers or None, reason or None, link or None),
-        )
-        rid = cur.fetchone()[0]
+        ids = []
+        for rank, o in enumerate(ranked, 1):
+            cur.execute(
+                """INSERT INTO recommendations (city, place, mood, answers, reason, link, rank, fit)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (key, o["place"].strip(), mood or None, summary, o.get("why") or None,
+                 o.get("link") or None, rank, o["fit"]),
+            )
+            ids.append(cur.fetchone()[0])
+        cur.execute("UPDATE recommendations SET batch = %s WHERE id = ANY(%s)", (ids[0], ids))
         conn.commit()
+    places = "\n".join(
+        f"  {rank}. {o['place']} — {o['fit']}% fit, recommendation #{rid}" + (f" — {o['link']}" if o.get("link") else "")
+        for rank, (o, rid) in enumerate(zip(ranked, ids), 1)
+    )
     return (
-        f"Recorded recommendation #{rid}: {place}. Give the recommendation, then ask "
-        + ask("How good is this recommendation?", ["5 — perfect", "4 — good", "3 — meh", "2 — not really", "1 — no"])
+        f"Recorded set #{ids[0]}:\n{places}\n\n"
+        "Reply in exactly this order:\n"
+        f"1. The reading, as one italic line: {reading.strip()}\n"
+        "2. This chart, unchanged, inside a code block:\n\n"
+        f"{fit_chart(answers, ranked)}\n\n"
+        f"3. #1 {ranked[0]['place']} — why it's the top pick: name the rows where it scores "
+        "highest, plus its link.\n"
+        "4. #2 and #3 — for each, why it's a good relative match and where it falls short "
+        "of #1 (point to the rows), plus its link.\n"
+        "5. Then ask "
+        + ask("How good are these recommendations?", ["5 — perfect", "4 — good", "3 — meh", "2 — not really", "1 — no"])
+        + f" Record it with rate_recommendations(set_id={ids[0]}, ...)."
     )
 
 
 @mcp.tool()
-def rate_recommendation(recommendation_id: int, rating: int, comment: str = "") -> str:
-    """The user's 1-5 rating of a recommendation (is it a good fit?).
+def rate_recommendations(set_id: int, rating: int, comment: str = "") -> str:
+    """The user's 1-5 rating of a set of recommendations (are these good
+    fits?). `set_id` is the number present_recommendations returned.
     `comment` is what they said was wrong or right — for a low rating, ask
     for it if they didn't say. Calling again updates the rating. Returns
     what to do next."""
@@ -567,34 +634,36 @@ def rate_recommendation(recommendation_id: int, rating: int, comment: str = "") 
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """UPDATE recommendations SET rating = %s, comment = %s, status = %s
-                WHERE id = %s AND deleted_at IS NULL RETURNING place, city""",
-            (rating, comment or None, status, recommendation_id),
+                WHERE batch = %s AND deleted_at IS NULL RETURNING id, place, city, rank""",
+            (rating, comment or None, status, set_id),
         )
-        row = cur.fetchone()
+        rows = sorted(cur.fetchall(), key=lambda r: r[3] or 0)
         conn.commit()
-    if not row:
-        return f"No recommendation #{recommendation_id}."
-    place, city = row
+    if not rows:
+        return f"No recommendation set #{set_id}."
+    city = rows[0][2]
+    names = ", ".join(p for _, p, _, _ in rows)
     if status == "liked":
+        ids = "; ".join(f"{p} → recommendation_id={rid}" for rid, p, _, _ in rows)
         return (
-            f"{place} rated {rating}/5 — a good recommendation. Ask "
-            + ask(f"Want me to add {place} to your try list?", ["Yes, add it", "No thanks"])
-            + f" If yes: save_place(city=\"{city}\", ..., recommendation_id={recommendation_id})."
+            f"Set #{set_id} ({names}) rated {rating}/5 — good recommendations. Ask "
+            + ask("Which one should I add to your try list?", [p for _, p, _, _ in rows] + ["None for now"])
+            + f" Then save_place(city=\"{city}\", ..., recommendation_id=…) for each one they pick: {ids}."
         )
     if not comment:
         return (
-            f"{place} rated {rating}/5 — not a good fit. Ask "
+            f"Set #{set_id} rated {rating}/5 — not a good fit. Ask "
             + ask(
-                "What was wrong with it?",
+                "What was wrong with these?",
                 ["Too loud", "Too pricey", "Wrong kind of food", "Too far", "Not the right vibe"],
             )
-            + " Then call rate_recommendation again with their answer as the comment."
+            + " Then call rate_recommendations again with their answer as the comment."
         )
     return (
-        f"{place} rated {rating}/5 — wrong: {comment}. Don't re-ask the questions. "
+        f"Set #{set_id} rated {rating}/5 — wrong: {comment}. Don't re-ask the questions. "
         "Keep all their answers, adjust only what this feedback points to, say in one "
         "line how you're adjusting, then call recommend_for_mood with the adjusted "
-        "answers and recommend a different place."
+        f"answers and present three different places (not {names})."
     )
 
 

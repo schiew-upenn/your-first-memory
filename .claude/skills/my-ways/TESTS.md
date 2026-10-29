@@ -42,19 +42,24 @@ they're asked.
 Pass: no city, mood, occasion or who-with question — it goes straight to
 cravings.
 
-## 6. One recommendation, then a rating
+## 6. A reading, three places, a chart, then a rating
 
-Pass: ONE place, why it fits my answers, a link, `record_recommendation`
-called, and "How good is this recommendation, 1–5?"
+Pass, in this order: one italic line reading what I want; the fit chart
+from `present_recommendations` in a code block; why #1 is the top pick
+(pointing at its winning rows); why #2 and #3 are good relative matches
+and where they fall short; links; "How good are these recommendations, 1–5?"
+Fail: fewer than three places, no reading, a chart Claude drew itself, or
+a place no tool or search returned.
 
 ## 7. A bad rating adjusts — it doesn't start over
 
 > 2
 
-Pass: "What was wrong with it?" → "too loud" → `rate_recommendation(id, 2,
-"too loud")`, one line on how it's adjusting ("going quieter"), and a
-different, quieter place — with NO questions re-asked.
-Fail: going back to "How are you feeling?", or the same place again.
+Pass: "What was wrong with these?" → "too loud" →
+`rate_recommendations(set, 2, "too loud")`, one line on how it's adjusting
+("going quieter"), and three different, quieter places — with NO questions
+re-asked.
+Fail: going back to "How are you feeling?", or the same places again.
 
 ## 7b. A miss isn't forever
 
@@ -65,8 +70,8 @@ avoid what was wrong (e.g. it was "too loud" for a date, today I want lively).
 
 > 5
 
-Pass: "Want me to add it to your try list?" → yes → `save_place(...,
-recommendation_id=id)`.
+Pass: "Which one should I add to your try list?" with the three places as
+choices → `save_place(..., recommendation_id=<that place's id>)`.
 
 ## 9. The follow-up (next day, NEW session)
 
