@@ -91,3 +91,9 @@ The model reasons over the answers; the server keeps the record.
   `pending_followups` ends with the recommendations-or-new-restaurants
   question. The city-first rule and the one-at-a-time pacing still rely
   on instructions and the skill.
+- Every question the server prompts (each of the eight, the
+  recommendations-or-new fork, the rating, "what was wrong", the try
+  list, the follow-up) comes with its choices and asks the model to show
+  them as a pop-up above the chat box. The server can't open that pop-up
+  itself — only the client's own ask-the-user tool can — so where a
+  client has none, the same choices arrive as plain text.

@@ -26,14 +26,18 @@ mcp = FastMCP(
     "your-first-memory",
     instructions=(
         "A food recommender for two cities, Philly and NYC, with a memory. "
-        "Every food conversation follows this order (ADR-0007). "
-        "1) FIRST question: 'NYC or Philly?' — unless the user already named "
-        "the city. "
+        "Every food conversation follows this order (ADR-0007). Ask every "
+        "question as a pop-up of tappable choices above the chat box (your "
+        "ask-the-user / multiple-choice tool, if you have one), one question "
+        "at a time, always letting the user type their own answer instead. "
+        "1) FIRST question: 'NYC or Philly?' (choices: NYC | Philly) — unless "
+        "the user already named the city. "
         "2) Call pending_followups(city). For each place the user saved from "
         "a past recommendation, ask whether they went and how it was, and "
         "record the answer with follow_up. "
         "3) Ask: 'Are you looking for food recommendations, or for new "
-        "restaurants in <city>?' New restaurants: call food_news(city, "
+        "restaurants in <city>?' (choices: Food recommendations | New "
+        "restaurants) New restaurants: call food_news(city, "
         "openings_only=True) and give the results as they are — no questions. "
         "4) Recommendations: ask one short question at a time — mood, "
         "occasion, who they're with, cravings, anything they don't want to "
@@ -123,16 +127,27 @@ MOOD_VIBE = {
 }
 # The interview before a recommendation (ADR-0007), in the order asked.
 # recommend_for_mood won't recommend until each has an answer or "skip".
+# Each comes with the choices to show as tappable options (ADR-0007);
+# the user can always type their own answer instead.
 QUESTIONS = [
-    ("mood", "How are you feeling? (crying, sad, neutral, happy, ecstatic — or in your own words)"),
-    ("occasion", "What's the occasion? (weeknight dinner, date, celebration, catch-up…)"),
-    ("company", "Are you with anyone — who? (solo, friends, a date, family, coworkers…)"),
-    ("craving", "Anything you're craving?"),
-    ("avoid", "Anything you don't want to eat, or can't? (dislikes, allergies, diet)"),
-    ("atmosphere", "What kind of restaurant mood? (cozy, lively, quiet, fancy, casual…)"),
-    ("budget", 'Budget? ($, $$, $$$, or "treat myself")'),
-    ("where_when", "Where and when? (neighborhood or how far you'll go; tonight or later; dine in or takeout)"),
+    ("mood", "How are you feeling?", ["Crying", "Sad", "Neutral", "Happy", "Ecstatic"]),
+    ("occasion", "What's the occasion?", ["Weeknight dinner", "Date", "Celebration", "Catch-up", "Work meal"]),
+    ("company", "Are you with anyone?", ["Just me", "Friends", "A date", "Family", "Coworkers"]),
+    ("craving", "Anything you're craving?", ["Noodles or soup", "Pizza or pasta", "Something spicy", "Something light", "Surprise me"]),
+    ("avoid", "Anything you don't want to eat, or can't?", ["Nothing — I eat everything", "Seafood", "Spicy food", "Meat (vegetarian)", "Gluten or dairy"]),
+    ("atmosphere", "What kind of restaurant mood?", ["Cozy", "Lively", "Quiet", "Fancy", "Casual"]),
+    ("budget", "Budget?", ["$", "$$", "$$$", "Treat myself"]),
+    ("where_when", "Where and when?", ["Nearby, tonight", "Worth a trip, tonight", "Takeout", "Planning ahead"]),
 ]
+CHOICES = (
+    "Show it as a pop-up of tappable choices above the chat box (your "
+    "ask-the-user / multiple-choice tool, if you have one) with these "
+    "options, and let them type their own answer instead"
+)
+
+
+def ask(question: str, options: list[str]) -> str:
+    return f'"{question}" — {CHOICES}: {" | ".join(options)}.'
 VIBES = {
     "comfort": "warm, cozy, low-effort food — soup, noodles, a reliable takeout",
     "everyday": "your dependable favorites, nothing to decide",
@@ -445,12 +460,12 @@ def recommend_for_mood(
             f"{', '.join(MOODS)} — don't ask again — log_mood with their word in the "
             "reason, tell them which you picked, and call recommend_for_mood with that mood."
         )
-    for param, question in QUESTIONS:
+    for param, question, options in QUESTIONS:
         if not answers[param].strip():
-            asked = sum(1 for p, _ in QUESTIONS if answers[p].strip())
+            asked = sum(1 for p, _, _ in QUESTIONS if answers[p].strip())
             return (
                 f"Not ready to recommend — {asked} of {len(QUESTIONS)} answered. "
-                f"Ask the user ONLY this next, in its own short message: {question} "
+                f"Ask the user ONLY this next, on its own: {ask(question, options)} "
                 f'Then call recommend_for_mood again with everything so far (use "skip" if they skip it).'
             )
     vibe = MOOD_VIBE[mood]
@@ -534,7 +549,10 @@ def record_recommendation(
         )
         rid = cur.fetchone()[0]
         conn.commit()
-    return f"Recorded recommendation #{rid}: {place}. Now ask the user to rate it 1-5."
+    return (
+        f"Recorded recommendation #{rid}: {place}. Give the recommendation, then ask "
+        + ask("How good is this recommendation?", ["5 — perfect", "4 — good", "3 — meh", "2 — not really", "1 — no"])
+    )
 
 
 @mcp.tool()
@@ -559,14 +577,18 @@ def rate_recommendation(recommendation_id: int, rating: int, comment: str = "") 
     place, city = row
     if status == "liked":
         return (
-            f"{place} rated {rating}/5 — a good recommendation. Ask whether to add it "
-            f"to their try list: save_place(city=\"{city}\", ..., recommendation_id={recommendation_id})."
+            f"{place} rated {rating}/5 — a good recommendation. Ask "
+            + ask(f"Want me to add {place} to your try list?", ["Yes, add it", "No thanks"])
+            + f" If yes: save_place(city=\"{city}\", ..., recommendation_id={recommendation_id})."
         )
     if not comment:
         return (
-            f"{place} rated {rating}/5 — not a good fit. Ask what was wrong with it "
-            "(too loud? too pricey? wrong food? too far?), then call rate_recommendation "
-            "again with their answer as the comment."
+            f"{place} rated {rating}/5 — not a good fit. Ask "
+            + ask(
+                "What was wrong with it?",
+                ["Too loud", "Too pricey", "Wrong kind of food", "Too far", "Not the right vibe"],
+            )
+            + " Then call rate_recommendation again with their answer as the comment."
         )
     return (
         f"{place} rated {rating}/5 — wrong: {comment}. Don't re-ask the questions. "
@@ -593,17 +615,23 @@ def pending_followups(city: str) -> str:
             (key,),
         )
         rows = cur.fetchall()
+    city_name = "Philly" if key == "philly" else "NYC"
     fork = (
-        f'Next, ask: "Are you looking for food recommendations, or for new '
-        f'restaurants in {"Philly" if key == "philly" else "NYC"}?" New restaurants → '
-        "food_news(openings_only=True), shown as-is. Recommendations → "
-        "recommend_for_mood, which tells you each question to ask."
+        "Next, ask: "
+        + ask(
+            f"Are you looking for food recommendations, or for new restaurants in {city_name}?",
+            ["Food recommendations", f"New restaurants in {city_name}"],
+        )
+        + " New restaurants → food_news(openings_only=True), shown as-is. "
+        "Recommendations → recommend_for_mood, which tells you each question to ask."
     )
     if not rows:
         return "No follow-ups pending. " + fork
     return "Ask about each, one at a time, and record with follow_up:\n" + "\n".join(
-        f"  recommendation #{rid}: {place} (recommended {ts:%b %d})" for rid, place, ts in rows
-    ) + "\nThen: " + fork
+        f"  recommendation #{rid}: {place} (recommended {ts:%b %d}) — "
+        + ask(f"Did you go to {place}? How was it?", ["Went — loved it", "Went — it was okay", "Went — didn't like it", "Not yet", "Not going"])
+        for rid, place, ts in rows
+    ) + "\nFor a place they went to, also get a 1-5 rating.\nThen: " + fork
 
 
 @mcp.tool()
