@@ -70,6 +70,10 @@ The model reasons over the answers; the server keeps the record.
 - Follow-ups only happen in a conversation about the same city, and only
   12+ hours after saving, so a place saved at lunch isn't asked about at
   dinner.
-- The "ask in this order" behaviour lives in instructions and the skill;
-  the server can't force it. The tools make each step easy and each
-  result says what to do next.
+- The questions are enforced by the server, not just the skill. In the
+  Claude app (no skill loaded) the model asked only three, so
+  `recommend_for_mood` now takes one parameter per question and, until
+  each has an answer or "skip", returns only the next question to ask.
+  `pending_followups` ends with the recommendations-or-new-restaurants
+  question. The city-first rule and the one-at-a-time pacing still rely
+  on instructions and the skill.

@@ -118,6 +118,18 @@ MOOD_VIBE = {
     "happy": "new",
     "ecstatic": "splurge",
 }
+# The interview before a recommendation (ADR-0007), in the order asked.
+# recommend_for_mood won't recommend until each has an answer or "skip".
+QUESTIONS = [
+    ("mood", "How are you feeling? (crying, sad, neutral, happy, ecstatic — or in your own words)"),
+    ("occasion", "What's the occasion? (weeknight dinner, date, celebration, catch-up…)"),
+    ("company", "Are you with anyone — who? (solo, friends, a date, family, coworkers…)"),
+    ("craving", "Anything you're craving?"),
+    ("avoid", "Anything you don't want to eat, or can't? (dislikes, allergies, diet)"),
+    ("atmosphere", "What kind of restaurant mood? (cozy, lively, quiet, fancy, casual…)"),
+    ("budget", 'Budget? ($, $$, $$$, or "treat myself")'),
+    ("where_when", "Where and when? (neighborhood or how far you'll go; tonight or later; dine in or takeout)"),
+]
 VIBES = {
     "comfort": "warm, cozy, low-effort food — soup, noodles, a reliable takeout",
     "everyday": "your dependable favorites, nothing to decide",
@@ -396,22 +408,49 @@ def log_meal(city: str, place: str, rating: int, mood: str = "", note: str = "")
 
 
 @mcp.tool()
-def recommend_for_mood(city: str, mood: str, craving: str = "") -> str:
-    """Everything needed to recommend a meal in a city ("philly" or "nyc")
-    for a mood (crying, sad, neutral, happy, ecstatic): what the mood calls
-    for, past meals there that went well in this mood, matching saved
+def recommend_for_mood(
+    city: str,
+    mood: str = "",
+    occasion: str = "",
+    company: str = "",
+    craving: str = "",
+    avoid: str = "",
+    atmosphere: str = "",
+    budget: str = "",
+    where_when: str = "",
+) -> str:
+    """Candidates for ONE recommendation in a city ("philly" or "nyc").
+    Needs the user's answer to every question — mood (crying, sad, neutral,
+    happy, ecstatic), occasion, company, craving, avoid, atmosphere, budget,
+    where_when — each asked ONE per message; pass "skip" if they skipped
+    it. Call it with what you have: until everything is answered it returns
+    the next question to ask, and nothing else. Once complete, it returns
+    what the mood calls for, past meals that went well in this mood, saved
     places, places already rejected (never suggest these again), news
-    matching `craving` (e.g. "ramen", "pizza"), and — for happy or
-    ecstatic — recent openings. Choose ONE place that fits all the user's
-    answers. If nothing here fits, search the web for a current place you
-    can link; never recommend from memory."""
+    matching the craving, and — for happy or ecstatic — recent openings.
+    Choose ONE place that fits every answer. If nothing here fits, search
+    the web for a current place you can link; never recommend from memory."""
     key = city_key(city)
     if not key:
         return CITY_ERROR
+    answers = locals()
     mood = mood.strip().lower()
-    if mood not in MOODS:
-        return f"mood must be one of {', '.join(MOODS)}."
+    if mood and mood not in MOODS:
+        return (
+            f'"{mood}" isn\'t one of the five moods. Map it yourself to the nearest of '
+            f"{', '.join(MOODS)} — don't ask again — log_mood with their word in the "
+            "reason, tell them which you picked, and call recommend_for_mood with that mood."
+        )
+    for param, question in QUESTIONS:
+        if not answers[param].strip():
+            asked = sum(1 for p, _ in QUESTIONS if answers[p].strip())
+            return (
+                f"Not ready to recommend — {asked} of {len(QUESTIONS)} answered. "
+                f"Ask the user ONLY this next, in its own short message: {question} "
+                f'Then call recommend_for_mood again with everything so far (use "skip" if they skip it).'
+            )
     vibe = MOOD_VIBE[mood]
+    craving = "" if craving.strip().lower() == "skip" else craving
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """SELECT place, rating, comment FROM recommendations
@@ -535,11 +574,17 @@ def pending_followups(city: str) -> str:
             (key,),
         )
         rows = cur.fetchall()
-    if not rows:
-        return "No follow-ups pending."
-    return "Ask about each:\n" + "\n".join(
-        f"  recommendation #{rid}: {place} (recommended {ts:%b %d})" for rid, place, ts in rows
+    fork = (
+        f'Next, ask: "Are you looking for food recommendations, or for new '
+        f'restaurants in {"Philly" if key == "philly" else "NYC"}?" New restaurants → '
+        "food_news(openings_only=True), shown as-is. Recommendations → "
+        "recommend_for_mood, which tells you each question to ask."
     )
+    if not rows:
+        return "No follow-ups pending. " + fork
+    return "Ask about each, one at a time, and record with follow_up:\n" + "\n".join(
+        f"  recommendation #{rid}: {place} (recommended {ts:%b %d})" for rid, place, ts in rows
+    ) + "\nThen: " + fork
 
 
 @mcp.tool()
