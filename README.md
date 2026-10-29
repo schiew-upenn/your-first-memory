@@ -7,19 +7,23 @@ survives the end of the conversation.
 
 Made mine: a **Philly + NYC food recommender that remembers how I feel**
 (ADR-0006, which grew out of the habit and mood log of ADR-0005). It
-starts by asking "NYC or Philly?", then answers "I'm sad, where should I
-eat?" from my mood log, the places I've saved in that city, the meals
-that worked before, and what just opened there (Philly Mag for Philly;
-Eater NY and Grub Street for New York).
+asks "NYC or Philly?", checks how my last saved recommendation went,
+then asks: recommendations, or new restaurants? New restaurants come
+straight from the news (Philly Mag; Eater NY and Grub Street). A
+recommendation comes after a few questions — mood, occasion, company,
+cravings, dislikes, atmosphere, budget, where — as ONE place I rate:
+a miss starts over, a hit goes on my try list and gets followed up next
+time (ADR-0007).
 
-Tools: `recommend_for_mood` · `food_news` · `save_place` ·
-`list_places` · `log_meal` · `log_mood` · `show_history` ·
+Tools: `recommend_for_mood` · `record_recommendation` ·
+`rate_recommendation` · `pending_followups` · `follow_up` · `food_news` ·
+`save_place` · `list_places` · `log_meal` · `log_mood` · `show_history` ·
 `delete_entry` · `restore_entry` — soft delete throughout, so a mistake
 can be hidden but never truly lost.
 
 - **In class**: follow [COURSE-STEPS.md](COURSE-STEPS.md).
 - **Every design choice, with the road not taken**: [docs/adr/](docs/adr/) —
-  four real decisions from the template, plus ADR-0005 and ADR-0006, my own.
+  four real decisions from the template, plus ADR-0005 to ADR-0007, my own.
 - **Stack**: FastMCP (`mcp[cli] >=1.2,<2` — pinned, see render.yaml) +
   `psycopg` + [Neon](https://neon.tech) free-tier Postgres + Render
   free-tier compute. News feeds are read with the standard library —

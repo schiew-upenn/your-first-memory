@@ -26,15 +26,30 @@ mcp = FastMCP(
     "your-first-memory",
     instructions=(
         "A food recommender for two cities, Philly and NYC, with a memory. "
-        "In every conversation about food, your FIRST question is: 'NYC or "
-        "Philly?' — unless the user already named the city. Every tool takes "
-        "that city. Before recommending, also know the user's mood (one of "
-        "crying, sad, neutral, happy, ecstatic): log it with log_mood if they "
-        "report one, then call recommend_for_mood. Recommend only from what "
-        "the tools return — saved places, past meals, the city's news — and "
-        "link the article for anything from the news. Only call log_meal for "
-        "a meal the user actually ate. Tell them what you saved, with its "
-        "entry id, so a mistake can be undone with delete_entry."
+        "Every food conversation follows this order (ADR-0007). "
+        "1) FIRST question: 'NYC or Philly?' — unless the user already named "
+        "the city. "
+        "2) Call pending_followups(city). For each place the user saved from "
+        "a past recommendation, ask whether they went and how it was, and "
+        "record the answer with follow_up. "
+        "3) Ask: 'Are you looking for food recommendations, or for new "
+        "restaurants in <city>?' New restaurants: call food_news(city, "
+        "openings_only=True) and give the results as they are — no questions. "
+        "4) Recommendations: ask one short question at a time — mood, "
+        "occasion, who they're with, cravings, anything they don't want to "
+        "eat, the restaurant atmosphere they want, budget, and where/when — "
+        "skipping anything already answered. Log the mood (one of crying, "
+        "sad, neutral, happy, ecstatic) with log_mood, then call "
+        "recommend_for_mood. "
+        "5) Give ONE recommendation that fits every answer, record it with "
+        "record_recommendation, and ask the user to rate it 1-5. "
+        "6) rate_recommendation: 1-3 means start the whole question sequence "
+        "again and never suggest that place again; 4-5 means ask whether to "
+        "add it to their try list (save_place with recommendation_id). "
+        "Only recommend places from the tools or from a web search you can "
+        "link — never from memory. Only call log_meal for a meal the user "
+        "actually ate. Tell them what you saved, with its entry id, so a "
+        "mistake can be undone with delete_entry."
     ),
     host="0.0.0.0",
     port=int(os.environ.get("PORT", 8000)),
@@ -74,6 +89,23 @@ CREATE TABLE IF NOT EXISTS meal_log (
     logged_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ
 );
+-- One row per recommendation given (ADR-0007). status moves
+-- suggested -> rejected | liked -> saved -> tried | skipped.
+CREATE TABLE IF NOT EXISTS recommendations (
+    id            SERIAL PRIMARY KEY,
+    city          TEXT NOT NULL,
+    place         TEXT NOT NULL,
+    mood          TEXT,
+    answers       TEXT,                        -- the user's answers, summarized
+    reason        TEXT,
+    link          TEXT,
+    rating        INTEGER,                     -- 1..5: was it a good recommendation?
+    comment       TEXT,
+    status        TEXT NOT NULL DEFAULT 'suggested',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_asked_at TIMESTAMPTZ,                 -- last follow-up the user answered "not yet"
+    deleted_at    TIMESTAMPTZ
+);
 """
 
 # The mood -> vibe mapping is the whole recommender (ADR-0006). Change it
@@ -95,7 +127,13 @@ VIBES = {
 
 # kind -> table. Table names can't be SQL parameters, so only these fixed
 # strings ever reach the query text.
-TABLES = {"mood": "mood_log", "place": "places", "meal": "meal_log"}
+TABLES = {
+    "mood": "mood_log",
+    "place": "places",
+    "meal": "meal_log",
+    "recommendation": "recommendations",
+}
+KINDS = '"mood", "meal", "place", or "recommendation"'
 
 # Each city's news (ADR-0006). Philly Mag is WordPress RSS with its own
 # ?s= search and ?paged= history; Eater NY (Atom, latest 10) and Grub
@@ -268,11 +306,13 @@ def save_place(
     status: str = "want",
     notes: str = "",
     link: str = "",
+    recommendation_id: int = 0,
 ) -> str:
     """Save a restaurant to the user's list for a city ("philly" or "nyc").
     `vibe` is what it's for: comfort, everyday, new, or splurge. `status`
     is "want" (to try) or "tried". `link` is where it came from, e.g. a
-    food_news article."""
+    food_news article. Pass `recommendation_id` when saving a place the
+    user rated well, so they're asked how it went next time."""
     key = city_key(city)
     if not key:
         return CITY_ERROR
@@ -289,8 +329,14 @@ def save_place(
              notes or None, link or None),
         )
         pid = cur.fetchone()[0]
+        if recommendation_id:
+            cur.execute(
+                "UPDATE recommendations SET status = 'saved' WHERE id = %s AND deleted_at IS NULL",
+                (recommendation_id,),
+            )
         conn.commit()
-    return f"Saved place #{pid}: {name} ({key}, {vibe}, {status})."
+    followup = " I'll ask how it went next time." if recommendation_id else ""
+    return f"Saved place #{pid}: {name} ({key}, {vibe}, {status}).{followup}"
 
 
 @mcp.tool()
@@ -350,12 +396,15 @@ def log_meal(city: str, place: str, rating: int, mood: str = "", note: str = "")
 
 
 @mcp.tool()
-def recommend_for_mood(city: str, mood: str) -> str:
+def recommend_for_mood(city: str, mood: str, craving: str = "") -> str:
     """Everything needed to recommend a meal in a city ("philly" or "nyc")
     for a mood (crying, sad, neutral, happy, ecstatic): what the mood calls
     for, past meals there that went well in this mood, matching saved
-    places, and — for happy or ecstatic — recent openings. Choose from
-    these; don't invent."""
+    places, places already rejected (never suggest these again), news
+    matching `craving` (e.g. "ramen", "pizza"), and — for happy or
+    ecstatic — recent openings. Choose ONE place that fits all the user's
+    answers. If nothing here fits, search the web for a current place you
+    can link; never recommend from memory."""
     key = city_key(city)
     if not key:
         return CITY_ERROR
@@ -364,6 +413,13 @@ def recommend_for_mood(city: str, mood: str) -> str:
         return f"mood must be one of {', '.join(MOODS)}."
     vibe = MOOD_VIBE[mood]
     with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT place, rating, comment FROM recommendations
+                WHERE deleted_at IS NULL AND city = %s AND status = 'rejected'
+                ORDER BY created_at DESC LIMIT 20""",
+            (key,),
+        )
+        rejected = cur.fetchall()
         cur.execute(
             """SELECT place, rating, note FROM meal_log
                 WHERE deleted_at IS NULL AND city = %s AND mood = %s AND rating >= 4
@@ -386,6 +442,16 @@ def recommend_for_mood(city: str, mood: str) -> str:
         f"  {name} ({st})" + "".join(f"; {x}" for x in (hood, cuisine, notes) if x)
         for name, st, hood, cuisine, notes in places
     ] or [f"  (none saved yet — save_place with city={key}, vibe={vibe})"]
+    if rejected:
+        out.append("\nAlready rejected — don't suggest again:")
+        out += [f"  {p} — rated {r}/5" + (f"; {c}" if c else "") for p, r, c in rejected]
+    if craving:
+        out.append(f"\n{CITIES[key]} news matching \"{craving}\":")
+        try:
+            found = recent(fetch_news(key, craving), 365)[:5]
+            out.append(format_news(found) if found else "  (nothing recent — try a web search)")
+        except Exception as e:
+            out.append(f"  (news feeds unreachable: {e})")
     if vibe in ("new", "splurge"):
         out.append(f"\nRecent {CITIES[key]} openings:")
         try:
@@ -398,9 +464,131 @@ def recommend_for_mood(city: str, mood: str) -> str:
 
 
 @mcp.tool()
+def record_recommendation(
+    city: str, place: str, mood: str, answers: str, reason: str, link: str = ""
+) -> str:
+    """Record the ONE recommendation you're about to give, before asking
+    the user to rate it. `answers` summarizes what they told you (occasion,
+    company, cravings, dislikes, atmosphere, budget, where/when); `reason`
+    is why this place fits; `link` is the article or page it came from."""
+    key = city_key(city)
+    if not key:
+        return CITY_ERROR
+    mood = mood.strip().lower()
+    if mood and mood not in MOODS:
+        return f"mood must be one of {', '.join(MOODS)}."
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO recommendations (city, place, mood, answers, reason, link)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+            (key, place.strip(), mood or None, answers or None, reason or None, link or None),
+        )
+        rid = cur.fetchone()[0]
+        conn.commit()
+    return f"Recorded recommendation #{rid}: {place}. Now ask the user to rate it 1-5."
+
+
+@mcp.tool()
+def rate_recommendation(recommendation_id: int, rating: int, comment: str = "") -> str:
+    """The user's 1-5 rating of a recommendation (is it a good fit?).
+    `comment` is what they said about why. Returns what to do next."""
+    if not 1 <= rating <= 5:
+        return "rating must be 1 to 5."
+    status = "liked" if rating >= 4 else "rejected"
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE recommendations SET rating = %s, comment = %s, status = %s
+                WHERE id = %s AND deleted_at IS NULL RETURNING place, city""",
+            (rating, comment or None, status, recommendation_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    if not row:
+        return f"No recommendation #{recommendation_id}."
+    place, city = row
+    if status == "liked":
+        return (
+            f"{place} rated {rating}/5 — a good recommendation. Ask whether to add it "
+            f"to their try list: save_place(city=\"{city}\", ..., recommendation_id={recommendation_id})."
+        )
+    return (
+        f"{place} rated {rating}/5 — not a good fit, and it won't be suggested again. "
+        "Ask briefly what missed if they haven't said, then start the whole question "
+        "sequence again from the mood question."
+    )
+
+
+@mcp.tool()
+def pending_followups(city: str) -> str:
+    """Places the user saved from a past recommendation in this city and
+    hasn't reported on yet. Call right after learning the city; for each,
+    ask whether they went and how it was, then call follow_up."""
+    key = city_key(city)
+    if not key:
+        return CITY_ERROR
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT id, place, created_at FROM recommendations
+                WHERE deleted_at IS NULL AND city = %s AND status = 'saved'
+                  AND coalesce(last_asked_at, created_at) < now() - interval '12 hours'
+                ORDER BY created_at""",
+            (key,),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return "No follow-ups pending."
+    return "Ask about each:\n" + "\n".join(
+        f"  recommendation #{rid}: {place} (recommended {ts:%b %d})" for rid, place, ts in rows
+    )
+
+
+@mcp.tool()
+def follow_up(recommendation_id: int, outcome: str, rating: int = 0, note: str = "") -> str:
+    """Record how a saved recommendation turned out. `outcome` is "tried"
+    (they went — give `rating` 1-5 for the meal), "not_yet" (ask again
+    another day), or "not_going" (stop asking)."""
+    outcome = outcome.strip().lower()
+    if outcome not in ("tried", "not_yet", "not_going"):
+        return 'outcome must be "tried", "not_yet", or "not_going".'
+    if outcome == "tried" and not 1 <= rating <= 5:
+        return "For a place they tried, rating must be 1 to 5."
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT city, place, mood FROM recommendations WHERE id = %s AND deleted_at IS NULL",
+            (recommendation_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return f"No recommendation #{recommendation_id}."
+        city, place, mood = row
+        if outcome == "not_yet":
+            cur.execute("UPDATE recommendations SET last_asked_at = now() WHERE id = %s", (recommendation_id,))
+            conn.commit()
+            return f"OK — I'll ask about {place} again another day."
+        if outcome == "not_going":
+            cur.execute("UPDATE recommendations SET status = 'skipped' WHERE id = %s", (recommendation_id,))
+            conn.commit()
+            return f"OK — won't ask about {place} again."
+        cur.execute("UPDATE recommendations SET status = 'tried' WHERE id = %s", (recommendation_id,))
+        cur.execute(
+            "INSERT INTO meal_log (city, place, mood, rating, note) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (city, place, mood, rating, note or None),
+        )
+        mid = cur.fetchone()[0]
+        cur.execute(
+            """UPDATE places SET status = 'tried'
+                WHERE city = %s AND lower(name) = lower(%s) AND deleted_at IS NULL""",
+            (city, place),
+        )
+        conn.commit()
+    return f"Logged meal #{mid}: {place} ({city}), {rating}/5 — recommendation #{recommendation_id} closed."
+
+
+@mcp.tool()
 def show_history(days: int = 7) -> str:
-    """Moods and meals (both cities) from the last `days` days, oldest
-    first, on one timeline. Deleted entries are left out. Times are UTC."""
+    """Moods, meals, and recommendations (both cities) from the last `days`
+    days, oldest first, on one timeline. Deleted entries are left out.
+    Times are UTC."""
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -410,9 +598,13 @@ def show_history(days: int = 7) -> str:
             SELECT 'meal', id, place || ' (' || city || ') ' || rating || '/5',
                    concat_ws('; ', mood, note), logged_at FROM meal_log
              WHERE deleted_at IS NULL AND logged_at > now() - make_interval(days => %s)
-            ORDER BY logged_at
+            UNION ALL
+            SELECT 'recommendation', id, place || ' (' || city || ') ' || status,
+                   concat_ws('; ', 'rated ' || rating || '/5', comment), created_at FROM recommendations
+             WHERE deleted_at IS NULL AND created_at > now() - make_interval(days => %s)
+            ORDER BY 5
             """,
-            (days, days),
+            (days, days, days),
         )
         rows = cur.fetchall()
     if not rows:
@@ -426,11 +618,12 @@ def show_history(days: int = 7) -> str:
 
 @mcp.tool()
 def delete_entry(kind: str, entry_id: int) -> str:
-    """Hide a mistaken entry (kind is "mood", "meal", or "place"). Soft
-    delete: the entry is hidden but kept, and restore_entry undoes this."""
+    """Hide a mistaken entry (kind is "mood", "meal", "place", or
+    "recommendation"). Soft delete: the entry is hidden but kept, and
+    restore_entry undoes this. Ask the user before deleting."""
     table = TABLES.get(kind.strip().lower())
     if not table:
-        return 'kind must be "mood", "meal", or "place".'
+        return f"kind must be {KINDS}."
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             f"UPDATE {table} SET deleted_at = now() WHERE id = %s AND deleted_at IS NULL",
@@ -445,10 +638,11 @@ def delete_entry(kind: str, entry_id: int) -> str:
 
 @mcp.tool()
 def restore_entry(kind: str, entry_id: int) -> str:
-    """Bring back an entry hidden by delete_entry (kind is "mood", "meal", or "place")."""
+    """Bring back an entry hidden by delete_entry (kind is "mood", "meal",
+    "place", or "recommendation")."""
     table = TABLES.get(kind.strip().lower())
     if not table:
-        return 'kind must be "mood", "meal", or "place".'
+        return f"kind must be {KINDS}."
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             f"UPDATE {table} SET deleted_at = NULL WHERE id = %s AND deleted_at IS NOT NULL",

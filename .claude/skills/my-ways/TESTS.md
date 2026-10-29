@@ -4,73 +4,84 @@ Skills load at session start. **Run these in a NEW session**, one at a time,
 typed as I'd actually type them. Don't read SKILL.md first in that session —
 reading it contaminates the trigger test.
 
-## 1. The rule that matters most — city first
+## 1. City first
 
 > Where should I get dinner?
 
-Pass: the first thing back is "NYC or Philly?" (mood may be asked in the
-same message) — no tool called, nothing recommended yet.
+Pass: the first thing back is "NYC or Philly?" — nothing else, no tool called.
 Fail: any recommendation, news, or guessed city before I answer.
 
-## 2. City already named — don't ask again
+## 2. Then the fork
 
-> I'm in such a good mood, what's good in New York tonight?
+> (answer to 1:) Philly
 
-Pass: no city question; `log_mood("happy")` then
-`recommend_for_mood("nyc", "happy")`; at most three places, each with a
-reason, and a link for anything from the news.
-Fail: asking "NYC or Philly?" anyway, or a restaurant no tool returned.
+Pass: `pending_followups("philly")` is called, then "Are you looking for food
+recommendations, or for new restaurants in Philly?"
 
-## 3. What's new
+## 3. New restaurants — no questions
 
-> What's opening lately?
+> New restaurants
 
-Pass: "NYC or Philly?" first. After I answer, `food_news(city,
-openings_only=True)`, each story with its date and link.
+Pass: `food_news("philly", openings_only=True)`, results as they are (date,
+name, link). No mood question, no rating.
 
-## 4. Ambiguous — a day, no feeling named
+## 4. Recommendations — one question at a time
 
-> Today was a lot. The interview went fine but I've been staring at the wall
-> since I got home.
+> (new session) Philly. Recommendations.
 
-Pass: the feeling is read from my words and logged as one of
-crying / sad / neutral / happy / ecstatic, my own words go in the reason,
-and I'm told *which one was picked* so I can correct it. No city question —
-this isn't about food.
-Fail: asking me "how are you feeling?" instead of reading it.
+Pass: mood, occasion, who I'm with, cravings, don't-want, restaurant mood,
+budget, where/when — ONE per message, each with example answers. The mood
+is logged as one of the five.
+Fail: all questions dumped in one message, or a recommendation before
+they're asked.
 
-## 5. A meal, then the loop closes
+## 5. Skips what I already said
 
-> Just had the pho at Pho 75 in Philly, honestly perfect. I was feeling pretty low before.
+> I'm so happy, it's my friend's birthday, where should I eat in NYC?
 
-Pass: `log_meal("philly", "Pho 75", 5, "sad", ...)` with the rating read
-from "perfect", and the meal id reported. Then in a NEW conversation,
-"I'm sad, where should I eat in Philly?" should bring Pho 75 back as what
-worked — and the same question for NYC should not.
+Pass: no city, mood, occasion or who-with question — it goes straight to
+cravings.
 
-## 6. Saving a place, city unknown
+## 6. One recommendation, then a rating
 
-> My friend says Vetri is amazing for a birthday dinner.
+Pass: ONE place, why it fits my answers, a link, `record_recommendation`
+called, and "How good is this recommendation, 1–5?"
 
-Pass: "NYC or Philly?" (or a correct guess said out loud to confirm),
-then an offer to save it as `splurge`.
-Fail: logging a meal — I haven't eaten there.
+## 7. A bad rating starts over
 
-## 7. The trap — a plan, not a thing done
+> 2, too loud
 
-> I'm thinking about getting ramen in the East Village tomorrow.
+Pass: `rate_recommendation(id, 2, "too loud")`, then the whole sequence again
+from the mood question; the next pick is a different place.
 
-Pass: nothing logged. "Never plans" is the rule most likely to be broken,
-because the sentence names food and a city.
+## 8. A good rating → try list
 
-## 8. Do nothing
+> 5
+
+Pass: "Want me to add it to your try list?" → yes → `save_place(...,
+recommendation_id=id)`.
+
+## 9. The follow-up (next day, NEW session)
+
+> Philly
+
+Pass: right after the city, "Last time I recommended X — did you go? How
+was it?" → "yes, 4/5, great pasta" → `follow_up(id, "tried", 4, ...)`.
+"Not yet" → `follow_up(id, "not_yet")`, asked again another day.
+
+## 10. The trap — a plan, not a thing done
+
+> I'm thinking about getting ramen tomorrow.
+
+Pass: nothing logged.
+
+## 11. Do nothing
 
 > Is it bad to eat late at night?
 
-Pass: a plain answer, nothing logged, no city question, no mention of
-the log.
+Pass: a plain answer, nothing logged, no city question.
 
 ---
 
-If the skill never fires on 1, 2 or 5, the **description** is the culprit,
-not the body. Tune the description, new session, run all eight again.
+If the skill never fires on 1 or 5, the **description** is the culprit,
+not the body. Tune the description, new session, run them again.
