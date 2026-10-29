@@ -26,14 +26,21 @@ and "what just opened?" The second needs no questions at all.
    cravings, don't-want, restaurant atmosphere, budget, where/when.
    Anything already answered is skipped.
 5. ONE recommendation, recorded with `record_recommendation`, rated 1–5.
-6. 1–3 → rejected, never suggested again, and the whole sequence starts
-   over. 4–5 → offer the try list (`save_place(recommendation_id=…)`).
+6. 1–3 → ask what was wrong, keep every answer, adjust only in that
+   direction ("quieter", "cheaper") and recommend a different place —
+   no questions re-asked. 4–5 → offer the try list
+   (`save_place(recommendation_id=…)`).
 7. Next conversation in that city, step 2 asks how it went:
    `follow_up(tried | not_yet | not_going)`. "Tried" logs the meal.
 
 **A `recommendations` table** holds the loop's state: place, mood, the
 answers, reason, link, the rating, and a status that moves
-`suggested → rejected | liked → saved → tried | skipped`.
+`suggested → missed | liked → saved → tried | skipped`.
+
+**A miss is about the request, not the place.** Within the same request
+(the last 3 hours) a missed place isn't offered again. On a later day it
+is shown with what was wrong, and is fine to recommend again when the new
+answers avoid that — too loud for a date can be right for a birthday.
 
 **Candidates beyond the tools.** Saved places and news are too thin for
 "quiet, no spice, with my parents" — so when nothing fits, the model may
@@ -49,9 +56,15 @@ ambiguous: which one was bad? One place, one rating, keeps the signal clean.
 answers get skipped. One at a time, with examples, and skipping what I
 already said, keeps it a conversation.
 
-**Restarting with my previous answers kept** would be quicker, but a bad
-recommendation often means an answer was wrong ("actually I don't want
-loud"). Asking again lets me change it.
+**Restarting the whole question sequence after a miss** was the first
+version. In use it was the wrong move: a miss usually means one thing
+was off ("too loud"), and eight questions again throws away seven good
+answers. Asking what was wrong and adjusting in that direction is faster
+and uses the feedback.
+
+**Never suggesting a missed place again** was also the first version —
+but a place can be wrong for one night and right for another. Banning it
+forever would quietly shrink the list.
 
 **Following up on every recommendation**, liked or not — too much nagging.
 Only places I chose to save are followed up; "not yet" waits a day
@@ -65,8 +78,9 @@ The model reasons over the answers; the server keeps the record.
 
 - A recommendation now takes ~8 short exchanges. Saying several things
   up front ("happy, friend's birthday, NYC") skips those questions.
-- Rejected places and their reasons accumulate per city and are shown to
-  the model every time, so the same miss isn't repeated.
+- Missed places and what was wrong accumulate per city and are shown to
+  the model every time, so the same mistake isn't repeated for the same
+  kind of request.
 - Follow-ups only happen in a conversation about the same city, and only
   12+ hours after saving, so a place saved at lunch isn't asked about at
   dinner.

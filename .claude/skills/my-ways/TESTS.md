@@ -47,12 +47,19 @@ cravings.
 Pass: ONE place, why it fits my answers, a link, `record_recommendation`
 called, and "How good is this recommendation, 1–5?"
 
-## 7. A bad rating starts over
+## 7. A bad rating adjusts — it doesn't start over
 
-> 2, too loud
+> 2
 
-Pass: `rate_recommendation(id, 2, "too loud")`, then the whole sequence again
-from the mood question; the next pick is a different place.
+Pass: "What was wrong with it?" → "too loud" → `rate_recommendation(id, 2,
+"too loud")`, one line on how it's adjusting ("going quieter"), and a
+different, quieter place — with NO questions re-asked.
+Fail: going back to "How are you feeling?", or the same place again.
+
+## 7b. A miss isn't forever
+
+A place I rated 2 on an earlier day can come back when today's answers
+avoid what was wrong (e.g. it was "too loud" for a date, today I want lively).
 
 ## 8. A good rating → try list
 

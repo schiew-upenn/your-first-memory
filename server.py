@@ -43,9 +43,11 @@ mcp = FastMCP(
         "recommend_for_mood. "
         "5) Give ONE recommendation that fits every answer, record it with "
         "record_recommendation, and ask the user to rate it 1-5. "
-        "6) rate_recommendation: 1-3 means start the whole question sequence "
-        "again and never suggest that place again; 4-5 means ask whether to "
-        "add it to their try list (save_place with recommendation_id). "
+        "6) rate_recommendation: 1-3 means ask what was wrong with it, keep "
+        "all their answers, adjust only in the direction the feedback points "
+        "(quieter, cheaper, closer…), and recommend a different place — don't "
+        "re-ask the questions; 4-5 means ask whether to add it to their try "
+        "list (save_place with recommendation_id). "
         "Only recommend places from the tools or from a web search you can "
         "link — never from memory. Only call log_meal for a meal the user "
         "actually ate. Tell them what you saved, with its entry id, so a "
@@ -90,7 +92,8 @@ CREATE TABLE IF NOT EXISTS meal_log (
     deleted_at TIMESTAMPTZ
 );
 -- One row per recommendation given (ADR-0007). status moves
--- suggested -> rejected | liked -> saved -> tried | skipped.
+-- suggested -> missed | liked -> saved -> tried | skipped. A miss is
+-- about that request, not the place: it can be suggested again later.
 CREATE TABLE IF NOT EXISTS recommendations (
     id            SERIAL PRIMARY KEY,
     city          TEXT NOT NULL,
@@ -426,10 +429,11 @@ def recommend_for_mood(
     it. Call it with what you have: until everything is answered it returns
     the next question to ask, and nothing else. Once complete, it returns
     what the mood calls for, past meals that went well in this mood, saved
-    places, places already rejected (never suggest these again), news
-    matching the craving, and — for happy or ecstatic — recent openings.
-    Choose ONE place that fits every answer. If nothing here fits, search
-    the web for a current place you can link; never recommend from memory."""
+    places, recent misses with what was wrong, news matching the craving,
+    and — for happy or ecstatic — recent openings. Choose ONE place that
+    fits every answer. After a miss, call again with the answers adjusted
+    by the user's feedback. If nothing here fits, search the web for a
+    current place you can link; never recommend from memory."""
     key = city_key(city)
     if not key:
         return CITY_ERROR
@@ -453,12 +457,13 @@ def recommend_for_mood(
     craving = "" if craving.strip().lower() == "skip" else craving
     with db() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT place, rating, comment FROM recommendations
-                WHERE deleted_at IS NULL AND city = %s AND status = 'rejected'
+            """SELECT place, rating, comment, created_at > now() - interval '3 hours'
+                 FROM recommendations
+                WHERE deleted_at IS NULL AND city = %s AND status = 'missed'
                 ORDER BY created_at DESC LIMIT 20""",
             (key,),
         )
-        rejected = cur.fetchall()
+        misses = cur.fetchall()
         cur.execute(
             """SELECT place, rating, note FROM meal_log
                 WHERE deleted_at IS NULL AND city = %s AND mood = %s AND rating >= 4
@@ -481,9 +486,14 @@ def recommend_for_mood(
         f"  {name} ({st})" + "".join(f"; {x}" for x in (hood, cuisine, notes) if x)
         for name, st, hood, cuisine, notes in places
     ] or [f"  (none saved yet — save_place with city={key}, vibe={vibe})"]
-    if rejected:
-        out.append("\nAlready rejected — don't suggest again:")
-        out += [f"  {p} — rated {r}/5" + (f"; {c}" if c else "") for p, r, c in rejected]
+    now = [(p, r, c) for p, r, c, current in misses if current]
+    before = [(p, r, c) for p, r, c, current in misses if not current]
+    if now:
+        out.append("\nMissed in this request — pick a different place, moved in the direction of the feedback:")
+        out += [f"  {p} — rated {r}/5" + (f"; wrong: {c}" if c else "") for p, r, c in now]
+    if before:
+        out.append("\nMissed on earlier days — fine to suggest again if today's answers avoid what was wrong:")
+        out += [f"  {p} — rated {r}/5" + (f"; wrong: {c}" if c else "") for p, r, c in before]
     if craving:
         out.append(f"\n{CITIES[key]} news matching \"{craving}\":")
         try:
@@ -530,10 +540,12 @@ def record_recommendation(
 @mcp.tool()
 def rate_recommendation(recommendation_id: int, rating: int, comment: str = "") -> str:
     """The user's 1-5 rating of a recommendation (is it a good fit?).
-    `comment` is what they said about why. Returns what to do next."""
+    `comment` is what they said was wrong or right — for a low rating, ask
+    for it if they didn't say. Calling again updates the rating. Returns
+    what to do next."""
     if not 1 <= rating <= 5:
         return "rating must be 1 to 5."
-    status = "liked" if rating >= 4 else "rejected"
+    status = "liked" if rating >= 4 else "missed"
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """UPDATE recommendations SET rating = %s, comment = %s, status = %s
@@ -550,10 +562,17 @@ def rate_recommendation(recommendation_id: int, rating: int, comment: str = "") 
             f"{place} rated {rating}/5 — a good recommendation. Ask whether to add it "
             f"to their try list: save_place(city=\"{city}\", ..., recommendation_id={recommendation_id})."
         )
+    if not comment:
+        return (
+            f"{place} rated {rating}/5 — not a good fit. Ask what was wrong with it "
+            "(too loud? too pricey? wrong food? too far?), then call rate_recommendation "
+            "again with their answer as the comment."
+        )
     return (
-        f"{place} rated {rating}/5 — not a good fit, and it won't be suggested again. "
-        "Ask briefly what missed if they haven't said, then start the whole question "
-        "sequence again from the mood question."
+        f"{place} rated {rating}/5 — wrong: {comment}. Don't re-ask the questions. "
+        "Keep all their answers, adjust only what this feedback points to, say in one "
+        "line how you're adjusting, then call recommend_for_mood with the adjusted "
+        "answers and recommend a different place."
     )
 
 

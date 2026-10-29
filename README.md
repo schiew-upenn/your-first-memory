@@ -12,7 +12,7 @@ then asks: recommendations, or new restaurants? New restaurants come
 straight from the news (Philly Mag; Eater NY and Grub Street). A
 recommendation comes after a few questions — mood, occasion, company,
 cravings, dislikes, atmosphere, budget, where — as ONE place I rate:
-a miss starts over, a hit goes on my try list and gets followed up next
+a miss asks what was wrong and adjusts, a hit goes on my try list and gets followed up next
 time (ADR-0007).
 
 Tools: `recommend_for_mood` · `record_recommendation` ·
