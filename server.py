@@ -535,6 +535,13 @@ def recommend_for_mood(
             out.append(format_news(openings) if openings else "  (none in the latest stories)")
         except Exception as e:
             out.append(f"  (news feeds unreachable: {e})")
+    out.append(
+        "\nNEXT — do not answer with a single place. Pick at least THREE places that "
+        "fit (search the web for current, linkable ones if fewer than three above fit), "
+        "score each 0-5 against every answer the user gave, and call "
+        "present_recommendations(city, mood, reading, answers, options) with a one-line "
+        "reading of what they want. It returns a fit chart and the exact reply order."
+    )
     return "\n".join(out)
 
 
@@ -584,8 +591,14 @@ def present_recommendations(
     if len(options) < 3:
         return f"Give at least 3 options (got {len(options)}): a top pick and two relative matches."
     for o in options:
-        missing = [p for p in answers if not isinstance((o.get("scores") or {}).get(p), int)
-                   or not 0 <= o["scores"][p] <= 5]
+        scores = o.get("scores") or {}
+        for p in answers:  # accept 4, 4.0 or "4"
+            try:
+                scores[p] = round(float(scores[p]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        o["scores"] = scores
+        missing = [p for p in answers if not isinstance(scores.get(p), int) or not 0 <= scores[p] <= 5]
         if not o.get("place") or missing:
             return f"Each option needs a place and a 0-5 score for: {', '.join(answers)}. Check {o.get('place') or 'an option'} ({', '.join(missing)})."
         o["fit"] = round(100 * sum(o["scores"][p] for p in answers) / (5 * len(answers)))
